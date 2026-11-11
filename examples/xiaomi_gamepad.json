@@ -1,0 +1,111 @@
+[
+  {
+    "device": "小米蓝牙手柄",
+    "exclusive": true,
+    "mask": true,
+    "axes": [
+      {
+        "name": "ABS_X",
+        "min": 0,
+        "max": 255,
+        "deadzone": 1,
+        "target": "ABS_X"
+      },
+      {
+        "name": "ABS_Y",
+        "min": 0,
+        "max": 255,
+        "deadzone": 1,
+        "target": "ABS_Y"
+      },
+      {
+        "name": "ABS_Z",
+        "min": 0,
+        "max": 255,
+        "deadzone": 1,
+        "target": "ABS_RX"
+      },
+      {
+        "name": "ABS_RZ",
+        "min": 0,
+        "max": 255,
+        "deadzone": 1,
+        "target": "ABS_RY"
+      },
+      {
+        "name": "ABS_BRAKE",
+        "min": 0,
+        "max": 255,
+        "deadzone": 1,
+        "center": 0,
+        "target": "ABS_Z"
+      },
+      {
+        "name": "ABS_THROTTLE",
+        "min": 0,
+        "max": 255,
+        "deadzone": 1,
+        "center": 0,
+        "target": "ABS_RZ"
+      },
+      {
+        "name": "ABS_HAT0X",
+        "min": -1,
+        "max": 1,
+        "target": "ABS_HAT0X"
+      },
+      {
+        "name": "ABS_HAT0Y",
+        "min": -1,
+        "max": 1,
+        "target": "ABS_HAT0Y"
+      }
+    ],
+    "buttons": [
+      {
+        "name": "BTN_NORTH",
+        "target": "BTN_NORTH"
+      },
+      {
+        "name": "BTN_SOUTH",
+        "target": "BTN_SOUTH"
+      },
+      {
+        "name": "BTN_EAST",
+        "target": "BTN_EAST"
+      },
+      {
+        "name": "BTN_WEST",
+        "target": "BTN_WEST"
+      },
+      {
+        "name": "BTN_TL",
+        "target": "BTN_TL"
+      },
+      {
+        "name": "BTN_TR",
+        "target": "BTN_TR"
+      },
+      {
+        "name": "BTN_THUMBL",
+        "target": "BTN_THUMBL"
+      },
+      {
+        "name": "BTN_THUMBR",
+        "target": "BTN_THUMBR"
+      },
+      {
+        "name": "BTN_SELECT",
+        "target": "BTN_SELECT"
+      },
+      {
+        "name": "BTN_START",
+        "target": "BTN_START"
+      },
+      {
+        "name": "KEY_HOMEPAGE",
+        "target": "BTN_MODE"
+      }
+    ]
+  }
+]

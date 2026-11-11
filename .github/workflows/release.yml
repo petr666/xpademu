@@ -1,0 +1,80 @@
+name: Build and Release Packages
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build:
+    name: Build RPM and DEB Packages
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Extract Version
+        id: get_version
+        run: |
+          TAG="${{ github.ref_name }}"
+          if [[ "$TAG" == "" || "$TAG" == "push" || "$TAG" == "workflow_dispatch" ]]; then
+            VERSION="0.0.0"
+          else
+            VERSION="${TAG#v}"
+          fi
+          echo "VERSION=$VERSION" >> $GITHUB_ENV
+
+      - name: Build RPM (Fedora Container)
+        run: |
+          mkdir -p build-artifacts
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE:/github/workspace" -w /github/workspace \
+            -e VERSION="$VERSION" fedora:latest bash -ec '
+              dnf install -y rpm-build rpmdevtools make findutils git
+              git config --global --add safe.directory /github/workspace
+              rpmdev-setuptree
+              git archive --format=tar.gz --prefix=xpademu/ HEAD > "$HOME/rpmbuild/SOURCES/xpademu.tar.gz"
+              sed -i "s/^Version:.*0.0.0/Version:        $VERSION/" packaging/rpm/xpademu.spec
+              rpmbuild -bs packaging/rpm/xpademu.spec
+              rpmbuild -bb packaging/rpm/xpademu.spec
+              cp -rv "$HOME"/rpmbuild/RPMS/*/*.rpm build-artifacts/
+              cp -rv "$HOME"/rpmbuild/SRPMS/*.src.rpm build-artifacts/
+            '
+
+      - name: Build DEB (Ubuntu Container)
+        run: |
+          mkdir -p build-artifacts
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE:/github/workspace" -w /github/workspace \
+            -e VERSION="$VERSION" ubuntu:latest bash -ec '
+              export DEBIAN_FRONTEND=noninteractive
+              apt-get update
+              apt-get install -y dpkg-dev debhelper dh-python python3-full git
+              git config --global --add safe.directory /github/workspace
+              git archive --format=tar.gz --prefix=xpademu/ HEAD > /tmp/xpademu.orig.tar.gz
+              tar -xzf /tmp/xpademu.orig.tar.gz -C /tmp/
+              cd /tmp/xpademu
+              mv packaging/deb debian
+              {
+                echo "xpademu ($VERSION-1) unstable; urgency=medium"
+                echo ""
+                echo "  * Automatic release from GitHub Tag $VERSION"
+                echo ""
+                echo " -- Builder <builder@example.com>  $(date -R)"
+              } > debian/changelog
+              dpkg-buildpackage -us -uc
+              cp -v /tmp/*.deb /tmp/*.dsc /github/workspace/build-artifacts/
+              cp -v /tmp/*.orig.tar.gz /github/workspace/build-artifacts/ || true
+            '
+
+      - name: Create GitHub Release and Upload Artifacts
+        uses: softprops/action-gh-release@v2
+        if: ${{ !env.ACT }}
+        with:
+          files: |
+            build-artifacts/*
+          generate_release_notes: false

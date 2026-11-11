@@ -1,0 +1,4 @@
+xpademu usr/bin/
+packaging/systemd/xpademu.service lib/systemd/system/
+examples/thrustmaster_score_a.json etc/xpademu.d/thrustmaster_score_a.json.example
+examples/xiaomi_gamepad.json etc/xpademu.d/xiaomi_gamepad.json.example

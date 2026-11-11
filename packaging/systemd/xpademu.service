@@ -1,0 +1,17 @@
+[Unit]
+Description=xpademu - Generic Gamepad to Xbox 360 Controller Multiplexer
+After=local-fs.target systemd-udev-settle.target
+Wants=systemd-udev-settle.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/etc/xpademu.d
+ExecStart=/usr/bin/xpademu /etc/xpademu.d/*.json
+Restart=on-failure
+RestartSec=3s
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

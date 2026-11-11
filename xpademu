@@ -1,0 +1,343 @@
+#!/usr/bin/python3
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+import sys
+import os
+import glob
+import json
+import threading
+import selectors
+from evdev import UInput, AbsInfo, ecodes as e, InputDevice, list_devices
+import pyinotify
+
+def axis_to_axis(val, src_min, src_max, tgt_min, tgt_max, center=None, deadzone=0):
+    if center is None:
+        center = (src_min + src_max) / 2
+
+    # Clamp value to source range
+    val = max(src_min, min(val, src_max))
+
+    # Check if the axis is centered (i.e., center lies strictly between min and max)
+    if src_min < center < src_max:
+        # Apply deadzone around the center
+        if abs(val - center) <= deadzone:
+            return 0
+
+        if val < center:
+            # Map lower half [src_min, center] to [tgt_min, 0]
+            norm = (val - src_min) / (center - src_min)
+            res = int(tgt_min + norm * (-tgt_min))
+        else:
+            # Map upper half [center, src_max] to [0, tgt_max]
+            norm = (val - center) / (src_max - center)
+            res = int(norm * tgt_max)
+
+        return max(tgt_min, min(res, tgt_max))
+
+    # Standard linear mapping for non-centered axes
+    norm = (val - src_min) / (src_max - src_min)
+    res = int(tgt_min + norm * (tgt_max - tgt_min))
+    return max(tgt_min, min(res, tgt_max))
+
+def button_to_button(val, ui, target_code):
+    press_val = 1 if val > 0 else 0
+    ui.write(e.EV_KEY, target_code, press_val)
+    ui.syn()
+
+def button_to_axis(val, ui, target_code, pressed_value, released_value=0):
+    axis_val = pressed_value if val > 0 else released_value
+    ui.write(e.ABS_ABS if hasattr(e, 'ABS_ABS') else e.EV_ABS, target_code, axis_val)
+    ui.syn()
+
+def find_associated_js_node(device):
+    try:
+        sys_path = os.path.realpath(f"/sys/class/input/{os.path.basename(device.path)}")
+        parent_dir = os.path.dirname(sys_path)
+        if os.path.exists(parent_dir):
+            for entry in os.listdir(parent_dir):
+                if entry.startswith("js"):
+                    js_path = f"/dev/input/{entry}"
+                    if os.path.exists(js_path):
+                        return js_path
+    except Exception:
+        pass
+    return None
+
+def parse_config_mappings(config):
+    axes_config = {}
+    for ax in config.get("axes", []):
+        code = getattr(e, ax["name"], None)
+        tgt_code = getattr(e, ax["target"], None)
+        if code is not None and tgt_code is not None:
+            axes_config[code] = {
+                "target": tgt_code,
+                "min": ax["min"],
+                "max": ax["max"],
+                "center": ax.get("center", None),
+                "deadzone": ax.get("deadzone", 0)
+            }
+
+    buttons_config = {}
+    for btn in config.get("buttons", []):
+        code = getattr(e, btn["name"], None)
+        tgt_name = btn["target"]
+        tgt_code = getattr(e, tgt_name, None)
+        if code is not None and tgt_code is not None:
+            is_axis = tgt_name.startswith("ABS_")
+            buttons_config[code] = {
+                "target": tgt_code,
+                "is_axis": is_axis
+            }
+
+    return axes_config, buttons_config
+
+class ActiveDeviceSession:
+    def __init__(self, config, ui, prefix):
+        self.config = config
+        self.ui = ui
+        self.prefix = prefix
+        self.device_name = config["device"]
+        self.exclusive = config.get("exclusive", True)
+        self.mask = config.get("mask", True)
+        self.axes_config, self.buttons_config = parse_config_mappings(config)
+        self.device = None
+        self.js_path = None
+        self.current_path = None
+
+    def connect(self, device_path):
+        self.current_path = device_path
+        self.device = InputDevice(device_path)
+
+        if self.exclusive:
+            print(f"[{self.prefix}] Grabbing exclusive access to '{self.device_name}' at {device_path}...")
+            self.device.grab()
+        else:
+            print(f"[{self.prefix}] Opening '{self.device_name}' at {device_path} in passthrough mode...")
+
+        if self.mask:
+            try:
+                os.unlink(device_path)
+                print(f"[{self.prefix}] Unlinked device node: {device_path}")
+            except OSError as err:
+                print(f"[{self.prefix}] Warning: Could not unlink {device_path}: {err}")
+
+            self.js_path = find_associated_js_node(self.device)
+            if self.js_path:
+                try:
+                    os.unlink(self.js_path)
+                    print(f"[{self.prefix}] Unlinked joystick node: {self.js_path}")
+                except OSError as err:
+                    print(f"[{self.prefix}] Warning: Could not unlink {self.js_path}: {err}")
+
+    def handle_events(self):
+        try:
+            for event in self.device.read():
+                if event.type == e.EV_ABS:
+                    if event.code in self.axes_config:
+                        cfg = self.axes_config[event.code]
+                        if event.code in (e.ABS_HAT0X, e.ABS_HAT0Y):
+                            self.ui.write(e.EV_ABS, cfg["target"], event.value)
+                            self.ui.syn()
+                        else:
+                            tgt_max = 255 if cfg["target"] in (e.ABS_Z, e.ABS_RZ) else 32767
+                            tgt_min = 0 if tgt_max == 255 else -32767
+
+                            mapped_val = axis_to_axis(
+                                event.value, cfg["min"], cfg["max"],
+                                tgt_min, tgt_max,
+                                center=cfg["center"], deadzone=cfg["deadzone"]
+                            )
+                            self.ui.write(e.ABS_ABS if hasattr(e, 'ABS_ABS') else e.EV_ABS, cfg["target"], mapped_val)
+                            self.ui.syn()
+                elif event.type == e.EV_KEY:
+                    if event.code in self.buttons_config:
+                        cfg = self.buttons_config[event.code]
+                        if cfg["is_axis"]:
+                            max_val = 255 if cfg["target"] in (e.ABS_Z, e.ABS_RZ) else 32767
+                            button_to_axis(event.value, self.ui, cfg["target"], pressed_value=max_val)
+                        else:
+                            button_to_button(event.value, self.ui, cfg["target"])
+        except (OSError, IOError) as err:
+            print(f"[{self.prefix}] Device '{self.device_name}' disconnected, waiting for re-connection...")
+            self.cleanup()
+            return False
+        return True
+
+    def cleanup(self):
+        if self.device and self.exclusive:
+            try:
+                self.device.ungrab()
+            except Exception:
+                pass
+        self.device = None
+        self.current_path = None
+
+class VirtualControllerHandler(threading.Thread):
+    def __init__(self, file_configs, ui, state_changed_event, prefix):
+        super().__init__(daemon=True)
+        self.configs = file_configs if isinstance(file_configs, list) else [file_configs]
+        self.ui = ui
+        self.state_changed_event = state_changed_event
+        self.prefix = prefix
+        self.active_sessions = []
+
+    def find_device_path(self, target_name):
+        for path in list_devices():
+            try:
+                dev = InputDevice(path)
+                if dev.name == target_name:
+                    return path
+            except Exception:
+                continue
+        return None
+
+    def run(self):
+        class DeviceFound(Exception):
+            def __init__(self, session, path):
+                self.session = session
+                self.path = path
+
+        while True:
+            # 1. Check if any configured devices are already plugged in
+            for cfg in self.configs:
+                target_name = cfg["device"]
+                if not any(s.config == cfg for s in self.active_sessions):
+                    path = self.find_device_path(target_name)
+                    if path:
+                        print(f"[{self.prefix}] Found '{target_name}' connected at {path}")
+                        session = ActiveDeviceSession(cfg, self.ui, self.prefix)
+                        session.connect(path)
+                        self.active_sessions.append(session)
+                        self.state_changed_event.set()
+
+            # 2. Wait via pyinotify for any missing device in this file's config list
+            wm = pyinotify.WatchManager()
+            mask = pyinotify.IN_CREATE
+
+            class EventHandler(pyinotify.ProcessEvent):
+                def __init__(self, outer_handler):
+                    self.outer_handler = outer_handler
+
+                def process_IN_CREATE(self, event):
+                    if event.name.startswith('event'):
+                        candidate_path = os.path.join(event.path, event.name)
+                        try:
+                            dev = InputDevice(candidate_path)
+                            for cfg in self.outer_handler.configs:
+                                if dev.name == cfg["device"]:
+                                    if not any(s.config == cfg for s in self.outer_handler.active_sessions):
+                                        print(f"[{self.outer_handler.prefix}] Target device '{cfg['device']}' connected at {candidate_path}")
+                                        session = ActiveDeviceSession(cfg, self.outer_handler.ui, self.outer_handler.prefix)
+                                        raise DeviceFound(session, candidate_path)
+                        except DeviceFound:
+                            raise
+                        except Exception:
+                            pass
+
+            handler = EventHandler(self)
+            notifier = pyinotify.Notifier(wm, handler)
+            wm.add_watch('/dev/input', mask, rec=False)
+
+            for cfg in self.configs:
+                if not any(s.config == cfg for s in self.active_sessions):
+                    print(f"[{self.prefix}] Waiting for device '{cfg['device']}' to be connected...")
+
+            matched_session = None
+            matched_path = None
+            try:
+                notifier.loop()
+            except DeviceFound as df:
+                matched_session = df.session
+                matched_path = df.path
+                notifier.stop()
+            except Exception:
+                pass
+
+            if matched_session and matched_path:
+                matched_session.connect(matched_path)
+                self.active_sessions.append(matched_session)
+                self.state_changed_event.set()
+
+def main():
+    if len(sys.argv) < 2:
+        print(f"Usage: xpademu <config1.json> [<config2.json> ...]")
+        sys.exit(0)
+
+    file_paths = []
+    for arg in sys.argv[1:]:
+        matches = sorted(glob.glob(arg))
+        file_paths.extend(matches if matches else [arg])
+
+    capabilities = {
+        e.EV_KEY: [
+            e.BTN_SOUTH, e.BTN_EAST, e.BTN_NORTH, e.BTN_WEST,
+            e.BTN_TL, e.BTN_TR, e.BTN_SELECT, e.BTN_START, e.BTN_MODE,
+            e.BTN_THUMBL, e.BTN_THUMBR
+        ],
+        e.EV_ABS: [
+            (e.ABS_X, AbsInfo(value=0, min=-32767, max=32767, fuzz=16, flat=128, resolution=0)),
+            (e.ABS_Y, AbsInfo(value=0, min=-32767, max=32767, fuzz=16, flat=128, resolution=0)),
+            (e.ABS_RX, AbsInfo(value=0, min=-32767, max=32767, fuzz=16, flat=128, resolution=0)),
+            (e.ABS_RY, AbsInfo(value=0, min=-32767, max=32767, fuzz=16, flat=128, resolution=0)),
+            (e.ABS_Z, AbsInfo(value=0, min=0, max=255, fuzz=0, flat=0, resolution=0)),
+            (e.ABS_RZ, AbsInfo(value=0, min=0, max=255, fuzz=0, flat=0, resolution=0)),
+            (e.ABS_HAT0X, AbsInfo(value=0, min=-1, max=1, fuzz=0, flat=0, resolution=0)),
+            (e.ABS_HAT0Y, AbsInfo(value=0, min=-1, max=1, fuzz=0, flat=0, resolution=0)),
+        ]
+    }
+
+    print("Registering virtual Xbox 360 controller...")
+
+    uinput_contexts = []
+    handlers = []
+    state_changed_event = threading.Event()
+
+    for idx, path in enumerate(file_paths):
+        with open(path, "r") as f:
+            file_configs = json.load(f)
+
+        if len(file_paths) == 1:
+            pad_name = "Microsoft X-Box 360 pad"
+        else:
+            pad_name = f"Microsoft X-Box 360 pad ({idx + 1})"
+
+        prefix = f"xpad{idx + 1}"
+        print(f"[{prefix}] Virtual controller active. Initializing {len(file_configs) if isinstance(file_configs, list) else 1} configuration handler(s) from '{path}'...")
+
+        ui = UInput(capabilities, name=pad_name, vendor=0x045e, product=0x028e, version=0x110)
+        uinput_contexts.append(ui)
+
+        handler = VirtualControllerHandler(file_configs, ui, state_changed_event, prefix)
+        handler.start()
+        handlers.append(handler)
+
+    try:
+        while True:
+            all_sessions = []
+            for h in handlers:
+                h.active_sessions = [s for s in h.active_sessions if s.device is not None]
+                all_sessions.extend(h.active_sessions)
+
+            if not all_sessions:
+                state_changed_event.clear()
+                state_changed_event.wait()
+                continue
+
+            sel = selectors.DefaultSelector()
+            for s in all_sessions:
+                sel.register(s.device.fd, selectors.EVENT_READ, s)
+
+            events = sel.select(timeout=1.0)
+            for key, mask in events:
+                session = key.data
+                session.handle_events()
+            sel.close()
+
+    except KeyboardInterrupt:
+        print("Stopping service...")
+    finally:
+        for ui in uinput_contexts:
+            ui.close()
+
+if __name__ == "__main__":
+    main()

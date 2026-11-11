@@ -1,0 +1,12 @@
+Source: xpademu
+Section: admin
+Priority: optional
+Maintainer: Petr Bartos <bartos.petr@gmail.com>
+Build-Depends: debhelper-compat (= 13), dh-python, python3
+Standards-Version: 4.6.2
+Homepage: https://github.com/petr666/xpademu
+
+Package: xpademu
+Architecture: all
+Depends: ${misc:Depends}, python3, python3-evdev, python3-inotify
+Description: Generic gamepad to virtual Xbox 360 controller multiplexer.
