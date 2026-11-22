@@ -1,0 +1,5 @@
+xpademu (@VERSION@-1) stable; urgency=low
+
+  * Automatic release from GitHub Tag @VERSION@
+
+ -- Petr Bartos <bartos.petr@gmail.com>  @DATE@

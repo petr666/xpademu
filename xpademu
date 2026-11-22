@@ -58,25 +58,22 @@ def axis_to_axis(val, src_min, src_max, tgt_min, tgt_max, center=None, deadzone=
     return max(tgt_min, min(res, tgt_max))
 
 def button_to_button(val, ui, target_code):
-    press_val = 1 if val > 0 else 0
-    ui.write(e.EV_KEY, target_code, press_val)
+    ui.write(e.EV_KEY, target_code, int(val > 0))
     ui.syn()
 
 def button_to_axis(val, ui, target_code, pressed_value, released_value=0):
-    axis_val = pressed_value if val > 0 else released_value
-    ui.write(e.ABS_ABS if hasattr(e, 'ABS_ABS') else e.EV_ABS, target_code, axis_val)
+    ui.write(e.EV_ABS, target_code, pressed_value if val > 0 else released_value)
     ui.syn()
 
 def find_associated_js_node(device):
     try:
         sys_path = os.path.realpath(f"/sys/class/input/{os.path.basename(device.path)}")
         parent_dir = os.path.dirname(sys_path)
-        if os.path.exists(parent_dir):
+        if os.path.isdir(parent_dir):
             for entry in os.listdir(parent_dir):
-                if entry.startswith("js"):
-                    js_path = f"/dev/input/{entry}"
-                    if os.path.exists(js_path):
-                        return js_path
+                js_path = f"/dev/input/{entry}"
+                if entry.startswith("js") and os.path.exists(js_path):
+                    return js_path
     except Exception:
         pass
     return None
@@ -91,7 +88,7 @@ def parse_config_mappings(config):
                 "target": tgt_code,
                 "min": ax["min"],
                 "max": ax["max"],
-                "center": ax.get("center", None),
+                "center": ax.get("center"),
                 "deadzone": ax.get("deadzone", 0)
             }
 
@@ -101,10 +98,9 @@ def parse_config_mappings(config):
         tgt_name = btn["target"]
         tgt_code = getattr(e, tgt_name, None)
         if code is not None and tgt_code is not None:
-            is_axis = tgt_name.startswith("ABS_")
             buttons_config[code] = {
                 "target": tgt_code,
-                "is_axis": is_axis
+                "is_axis": tgt_name.startswith("ABS_")
             }
 
     return axes_config, buttons_config
@@ -119,7 +115,6 @@ class ActiveDeviceSession:
         self.mask = config.get("mask", True)
         self.axes_config, self.buttons_config = parse_config_mappings(config)
         self.device = None
-        self.js_path = None
         self.current_path = None
 
     def connect(self, device_path):
@@ -133,19 +128,13 @@ class ActiveDeviceSession:
             print(f"[{self.prefix}] Opening '{self.device_id}' at {device_path} in passthrough mode...")
 
         if self.mask:
-            try:
-                os.unlink(device_path)
-                print(f"[{self.prefix}] Unlinked device node: {device_path}")
-            except OSError as err:
-                print(f"[{self.prefix}] Warning: Could not unlink {device_path}: {err}")
-
-            self.js_path = find_associated_js_node(self.device)
-            if self.js_path:
-                try:
-                    os.unlink(self.js_path)
-                    print(f"[{self.prefix}] Unlinked joystick node: {self.js_path}")
-                except OSError as err:
-                    print(f"[{self.prefix}] Warning: Could not unlink {self.js_path}: {err}")
+            for path_attr in (device_path, find_associated_js_node(self.device)):
+                if path_attr:
+                    try:
+                        os.unlink(path_attr)
+                        print(f"[{self.prefix}] Unlinked node: {path_attr}")
+                    except OSError as err:
+                        print(f"[{self.prefix}] Warning: Could not unlink {path_attr}: {err}")
 
     def reset_inputs(self):
         for key_code in xpad_inputs[e.EV_KEY]:
@@ -159,32 +148,30 @@ class ActiveDeviceSession:
     def handle_events(self):
         try:
             for event in self.device.read():
-                if event.type == e.EV_ABS:
-                    if event.code in self.axes_config:
-                        cfg = self.axes_config[event.code]
-                        if event.code in (e.ABS_HAT0X, e.ABS_HAT0Y):
-                            self.ui.write(e.EV_ABS, cfg["target"], event.value)
-                            self.ui.syn()
-                        else:
-                            tgt_max = 255 if cfg["target"] in (e.ABS_Z, e.ABS_RZ) else 32767
-                            tgt_min = 0 if tgt_max == 255 else -32767
-
-                            mapped_val = axis_to_axis(
-                                event.value, cfg["min"], cfg["max"],
-                                tgt_min, tgt_max,
-                                center=cfg["center"], deadzone=cfg["deadzone"]
-                            )
-                            self.ui.write(e.ABS_ABS if hasattr(e, 'ABS_ABS') else e.EV_ABS, cfg["target"], mapped_val)
-                            self.ui.syn()
-                elif event.type == e.EV_KEY:
-                    if event.code in self.buttons_config:
-                        cfg = self.buttons_config[event.code]
-                        if cfg["is_axis"]:
-                            max_val = 255 if cfg["target"] in (e.ABS_Z, e.ABS_RZ) else 32767
-                            button_to_axis(event.value, self.ui, cfg["target"], pressed_value=max_val)
-                        else:
-                            button_to_button(event.value, self.ui, cfg["target"])
-        except (OSError, IOError) as err:
+                if event.type == e.EV_ABS and event.code in self.axes_config:
+                    cfg = self.axes_config[event.code]
+                    if event.code in (e.ABS_HAT0X, e.ABS_HAT0Y):
+                        self.ui.write(e.EV_ABS, cfg["target"], event.value)
+                    else:
+                        tgt_max = 255 if cfg["target"] in (e.ABS_Z, e.ABS_RZ) else 32767
+                        tgt_min = 0 if tgt_max == 255 else -32767
+                        mapped_val = axis_to_axis(
+                            event.value, cfg["min"], cfg["max"],
+                            tgt_min, tgt_max,
+                            center=cfg["center"], deadzone=cfg["deadzone"]
+                        )
+                        self.ui.write(e.EV_ABS, cfg["target"], mapped_val)
+                    self.ui.syn()
+                elif event.type == e.EV_KEY and event.code in self.buttons_config:
+                    cfg = self.buttons_config[event.code]
+                    if cfg["is_axis"]:
+                        max_val = 255 if cfg["target"] in (e.ABS_Z, e.ABS_RZ) else 32767
+                        button_to_axis(event.value, self.ui, cfg["target"], pressed_value=max_val)
+                    else:
+                        button_to_button(event.value, self.ui, cfg["target"])
+        except BlockingIOError:
+            pass
+        except (OSError, IOError):
             print(f"[{self.prefix}] Device '{self.device_id}' disconnected, waiting for re-connection...")
             self.reset_inputs()
             self.cleanup()
@@ -195,6 +182,11 @@ class ActiveDeviceSession:
         if self.device and self.exclusive:
             try:
                 self.device.ungrab()
+            except Exception:
+                pass
+        if self.device:
+            try:
+                self.device.close()
             except Exception:
                 pass
         self.device = None
@@ -213,8 +205,10 @@ class VirtualControllerHandler(threading.Thread):
         for path in list_devices():
             try:
                 dev = InputDevice(path)
-                if (dev.uniq and dev.uniq == target_id) or dev.name == target_id:
+                if dev.uniq == target_id or dev.name == target_id:
+                    dev.close()
                     return path
+                dev.close()
             except Exception:
                 continue
         return None
@@ -229,7 +223,7 @@ class VirtualControllerHandler(threading.Thread):
             # 1. Check if any configured devices are already plugged in
             for cfg in self.configs:
                 target_id = cfg["device"]
-                if not any(s.config == cfg for s in self.active_sessions):
+                if not any(s.config == cfg and s.device is not None for s in self.active_sessions):
                     path = self.find_device_path(target_id)
                     if path:
                         print(f"[{self.prefix}] Found '{target_id}' connected at {path}")
@@ -247,28 +241,30 @@ class VirtualControllerHandler(threading.Thread):
                     self.outer_handler = outer_handler
 
                 def process_IN_CREATE(self, event):
-                    if event.name.startswith('event'):
-                        candidate_path = os.path.join(event.path, event.name)
-                        try:
-                            dev = InputDevice(candidate_path)
-                            for cfg in self.outer_handler.configs:
-                                target_id = cfg["device"]
-                                if (dev.uniq and dev.uniq == target_id) or dev.name == target_id:
-                                    if not any(s.config == cfg for s in self.outer_handler.active_sessions):
-                                        print(f"[{self.outer_handler.prefix}] Target device '{cfg['device']}' connected at {candidate_path}")
-                                        session = ActiveDeviceSession(cfg, self.outer_handler.ui, self.outer_handler.prefix)
-                                        raise DeviceFound(session, candidate_path)
-                        except DeviceFound:
-                            raise
-                        except Exception:
-                            pass
+                    if not event.name.startswith('event'):
+                        return
+                    candidate_path = os.path.join(event.path, event.name)
+                    try:
+                        dev = InputDevice(candidate_path)
+                        for cfg in self.outer_handler.configs:
+                            target_id = cfg["device"]
+                            if dev.uniq == target_id or dev.name == target_id:
+                                if not any(s.config == cfg and s.device is not None for s in self.outer_handler.active_sessions):
+                                    dev.close()
+                                    print(f"[{self.outer_handler.prefix}] Target device '{target_id}' connected at {candidate_path}")
+                                    session = ActiveDeviceSession(cfg, self.outer_handler.ui, self.outer_handler.prefix)
+                                    raise DeviceFound(session, candidate_path)
+                        dev.close()
+                    except DeviceFound:
+                        raise
+                    except Exception:
+                        pass
 
-            handler = EventHandler(self)
-            notifier = pyinotify.Notifier(wm, handler)
+            notifier = pyinotify.Notifier(wm, EventHandler(self))
             wm.add_watch('/dev/input', mask, rec=False)
 
             for cfg in self.configs:
-                if not any(s.config == cfg for s in self.active_sessions):
+                if not any(s.config == cfg and s.device is not None for s in self.active_sessions):
                     print(f"[{self.prefix}] Waiting for device '{cfg['device']}' to be connected...")
 
             matched_session = None
@@ -307,11 +303,7 @@ def main():
         with open(path, "r") as f:
             file_configs = json.load(f)
 
-        if len(file_paths) == 1:
-            pad_name = "Microsoft X-Box 360 pad"
-        else:
-            pad_name = f"Microsoft X-Box 360 pad ({idx + 1})"
-
+        pad_name = "Microsoft X-Box 360 pad" if len(file_paths) == 1 else f"Microsoft X-Box 360 pad ({idx + 1})"
         prefix = f"xpad{idx + 1}"
         print(f"[{prefix}] Virtual controller active. Initializing {len(file_configs) if isinstance(file_configs, list) else 1} configuration handler(s) from '{path}'...")
 
@@ -334,15 +326,12 @@ def main():
                 state_changed_event.wait()
                 continue
 
-            sel = selectors.DefaultSelector()
-            for s in all_sessions:
-                sel.register(s.device.fd, selectors.EVENT_READ, s)
+            with selectors.DefaultSelector() as sel:
+                for s in all_sessions:
+                    sel.register(s.device.fd, selectors.EVENT_READ, s)
 
-            events = sel.select(timeout=1.0)
-            for key, mask in events:
-                session = key.data
-                session.handle_events()
-            sel.close()
+                for key, _ in sel.select(timeout=1.0):
+                    key.data.handle_events()
 
     except KeyboardInterrupt:
         print("Stopping service...")

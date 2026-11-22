@@ -1,5 +1,5 @@
 Name:           xpademu
-Version:        0.0.0
+Version:        @VERSION@
 Release:        1%{?dist}
 Summary:        Generic gamepad to virtual Xbox 360 controller multiplexer.
 
@@ -44,5 +44,5 @@ install -D -p -m 0644 examples/xiaomi_gamepad.json %{buildroot}%{_sysconfdir}/xp
 %license LICENSE
 
 %changelog
-* Mon Nov 09 2026 Petr Bartos <bartos.petr@gmail.com> - 0.0.0-1
-- Initial release
+* @DATE@ Petr Bartos <bartos.petr@gmail.com> - @VERSION@-1
+- Automatic release from GitHub Tag @VERSION@
