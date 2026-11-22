@@ -10,6 +10,24 @@ import selectors
 from evdev import UInput, AbsInfo, ecodes as e, InputDevice, list_devices
 import pyinotify
 
+xpad_inputs = {
+    e.EV_KEY: [
+        e.BTN_SOUTH, e.BTN_EAST, e.BTN_NORTH, e.BTN_WEST,
+        e.BTN_TL, e.BTN_TR, e.BTN_SELECT, e.BTN_START, e.BTN_MODE,
+        e.BTN_THUMBL, e.BTN_THUMBR
+    ],
+    e.EV_ABS: [
+        (e.ABS_X, AbsInfo(value=0, min=-32767, max=32767, fuzz=16, flat=128, resolution=0)),
+        (e.ABS_Y, AbsInfo(value=0, min=-32767, max=32767, fuzz=16, flat=128, resolution=0)),
+        (e.ABS_RX, AbsInfo(value=0, min=-32767, max=32767, fuzz=16, flat=128, resolution=0)),
+        (e.ABS_RY, AbsInfo(value=0, min=-32767, max=32767, fuzz=16, flat=128, resolution=0)),
+        (e.ABS_Z, AbsInfo(value=0, min=0, max=255, fuzz=0, flat=0, resolution=0)),
+        (e.ABS_RZ, AbsInfo(value=0, min=0, max=255, fuzz=0, flat=0, resolution=0)),
+        (e.ABS_HAT0X, AbsInfo(value=0, min=-1, max=1, fuzz=0, flat=0, resolution=0)),
+        (e.ABS_HAT0Y, AbsInfo(value=0, min=-1, max=1, fuzz=0, flat=0, resolution=0)),
+    ]
+}
+
 def axis_to_axis(val, src_min, src_max, tgt_min, tgt_max, center=None, deadzone=0):
     if center is None:
         center = (src_min + src_max) / 2
@@ -129,6 +147,15 @@ class ActiveDeviceSession:
                 except OSError as err:
                     print(f"[{self.prefix}] Warning: Could not unlink {self.js_path}: {err}")
 
+    def reset_inputs(self):
+        for key_code in xpad_inputs[e.EV_KEY]:
+            self.ui.write(e.EV_KEY, key_code, 0)
+
+        for abs_code, _ in xpad_inputs[e.EV_ABS]:
+            self.ui.write(e.EV_ABS, abs_code, 0)
+
+        self.ui.syn()
+
     def handle_events(self):
         try:
             for event in self.device.read():
@@ -159,6 +186,7 @@ class ActiveDeviceSession:
                             button_to_button(event.value, self.ui, cfg["target"])
         except (OSError, IOError) as err:
             print(f"[{self.prefix}] Device '{self.device_name}' disconnected, waiting for re-connection...")
+            self.reset_inputs()
             self.cleanup()
             return False
         return True
@@ -268,24 +296,6 @@ def main():
         matches = sorted(glob.glob(arg))
         file_paths.extend(matches if matches else [arg])
 
-    capabilities = {
-        e.EV_KEY: [
-            e.BTN_SOUTH, e.BTN_EAST, e.BTN_NORTH, e.BTN_WEST,
-            e.BTN_TL, e.BTN_TR, e.BTN_SELECT, e.BTN_START, e.BTN_MODE,
-            e.BTN_THUMBL, e.BTN_THUMBR
-        ],
-        e.EV_ABS: [
-            (e.ABS_X, AbsInfo(value=0, min=-32767, max=32767, fuzz=16, flat=128, resolution=0)),
-            (e.ABS_Y, AbsInfo(value=0, min=-32767, max=32767, fuzz=16, flat=128, resolution=0)),
-            (e.ABS_RX, AbsInfo(value=0, min=-32767, max=32767, fuzz=16, flat=128, resolution=0)),
-            (e.ABS_RY, AbsInfo(value=0, min=-32767, max=32767, fuzz=16, flat=128, resolution=0)),
-            (e.ABS_Z, AbsInfo(value=0, min=0, max=255, fuzz=0, flat=0, resolution=0)),
-            (e.ABS_RZ, AbsInfo(value=0, min=0, max=255, fuzz=0, flat=0, resolution=0)),
-            (e.ABS_HAT0X, AbsInfo(value=0, min=-1, max=1, fuzz=0, flat=0, resolution=0)),
-            (e.ABS_HAT0Y, AbsInfo(value=0, min=-1, max=1, fuzz=0, flat=0, resolution=0)),
-        ]
-    }
-
     print("Registering virtual Xbox 360 controller...")
 
     uinput_contexts = []
@@ -304,7 +314,7 @@ def main():
         prefix = f"xpad{idx + 1}"
         print(f"[{prefix}] Virtual controller active. Initializing {len(file_configs) if isinstance(file_configs, list) else 1} configuration handler(s) from '{path}'...")
 
-        ui = UInput(capabilities, name=pad_name, vendor=0x045e, product=0x028e, version=0x110)
+        ui = UInput(xpad_inputs, name=pad_name, vendor=0x045e, product=0x028e, version=0x110)
         uinput_contexts.append(ui)
 
         handler = VirtualControllerHandler(file_configs, ui, state_changed_event, prefix)
