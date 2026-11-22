@@ -20,6 +20,8 @@ A lightweight tool (and background service) that translates any generic physical
 
 Furthermore, a **single configuration file can contain multiple physical devices** mapped into that same virtual Xbox controller. This allows you to combine split inputs (such as a custom arcade stick layout or a separate throttle and wheel) into a unified virtual pad.
 
+Device to be mapped (attribute `device` in config file) can be either identified simply by its name (obtainable e.g. as `cat /sys/class/input/eventX/device/name`), or by a unique id obtainable as `cat /sys/class/input/eventX/device/uniq`, which is usable in case you have connected multiple devices of exactly the same type.
+
 Some configuration examples can be found [**here**](examples). Names of inputs and ranges for the device axes to be mapped can be found, for example, using the [`evtest`](https://github.com/freedesktop-unofficial-mirror/evtest) tool.
 
 ## Usage

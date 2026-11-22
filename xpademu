@@ -114,7 +114,7 @@ class ActiveDeviceSession:
         self.config = config
         self.ui = ui
         self.prefix = prefix
-        self.device_name = config["device"]
+        self.device_id = config["device"]
         self.exclusive = config.get("exclusive", True)
         self.mask = config.get("mask", True)
         self.axes_config, self.buttons_config = parse_config_mappings(config)
@@ -127,10 +127,10 @@ class ActiveDeviceSession:
         self.device = InputDevice(device_path)
 
         if self.exclusive:
-            print(f"[{self.prefix}] Grabbing exclusive access to '{self.device_name}' at {device_path}...")
+            print(f"[{self.prefix}] Grabbing exclusive access to '{self.device_id}' at {device_path}...")
             self.device.grab()
         else:
-            print(f"[{self.prefix}] Opening '{self.device_name}' at {device_path} in passthrough mode...")
+            print(f"[{self.prefix}] Opening '{self.device_id}' at {device_path} in passthrough mode...")
 
         if self.mask:
             try:
@@ -185,7 +185,7 @@ class ActiveDeviceSession:
                         else:
                             button_to_button(event.value, self.ui, cfg["target"])
         except (OSError, IOError) as err:
-            print(f"[{self.prefix}] Device '{self.device_name}' disconnected, waiting for re-connection...")
+            print(f"[{self.prefix}] Device '{self.device_id}' disconnected, waiting for re-connection...")
             self.reset_inputs()
             self.cleanup()
             return False
@@ -209,11 +209,11 @@ class VirtualControllerHandler(threading.Thread):
         self.prefix = prefix
         self.active_sessions = []
 
-    def find_device_path(self, target_name):
+    def find_device_path(self, target_id):
         for path in list_devices():
             try:
                 dev = InputDevice(path)
-                if dev.name == target_name:
+                if (dev.uniq and dev.uniq == target_id) or dev.name == target_id:
                     return path
             except Exception:
                 continue
@@ -228,11 +228,11 @@ class VirtualControllerHandler(threading.Thread):
         while True:
             # 1. Check if any configured devices are already plugged in
             for cfg in self.configs:
-                target_name = cfg["device"]
+                target_id = cfg["device"]
                 if not any(s.config == cfg for s in self.active_sessions):
-                    path = self.find_device_path(target_name)
+                    path = self.find_device_path(target_id)
                     if path:
-                        print(f"[{self.prefix}] Found '{target_name}' connected at {path}")
+                        print(f"[{self.prefix}] Found '{target_id}' connected at {path}")
                         session = ActiveDeviceSession(cfg, self.ui, self.prefix)
                         session.connect(path)
                         self.active_sessions.append(session)
@@ -252,7 +252,8 @@ class VirtualControllerHandler(threading.Thread):
                         try:
                             dev = InputDevice(candidate_path)
                             for cfg in self.outer_handler.configs:
-                                if dev.name == cfg["device"]:
+                                target_id = cfg["device"]
+                                if (dev.uniq and dev.uniq == target_id) or dev.name == target_id:
                                     if not any(s.config == cfg for s in self.outer_handler.active_sessions):
                                         print(f"[{self.outer_handler.prefix}] Target device '{cfg['device']}' connected at {candidate_path}")
                                         session = ActiveDeviceSession(cfg, self.outer_handler.ui, self.outer_handler.prefix)
